@@ -74,8 +74,10 @@
           <div class="row" style="margin-top:10px">
             <button id="btnRun">Build Tree</button>
             <button id="btnExample" class="secondary">Load example</button>
+            <button id="btnUpload" class="secondary">Upload file</button>
             <button id="btnDownload" class="secondary">Download Newick</button>
             <button id="btnSelfTest" class="secondary">Run self tests</button>
+            <input type="file" id="fileInput" style="display:none">
           </div>
           <div class="footer">This runs fully in your browser. No data leaves your machine.</div>
           <div id="err" class="error" style="display:none"></div>
@@ -165,6 +167,46 @@
       testsEl.textContent = 'Self tests crashed: ' + e.message;
       console.error(e);
     }
+  });
+
+  document.getElementById('btnUpload').addEventListener('click', () => {
+    document.getElementById('fileInput').click();
+  });
+
+  document.getElementById('fileInput').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        fastaEl.value = event.target.result;
+        clearError();
+        newickEl.value = '';
+        matrixEl.replaceChildren();
+        diagEl.replaceChildren();
+        testsEl.replaceChildren();
+        clearTreeViz();
+        
+        // Show success message briefly
+        const originalPlaceholder = fastaEl.placeholder;
+        fastaEl.placeholder = `✓ Loaded ${file.name}`;
+        setTimeout(() => {
+          fastaEl.placeholder = originalPlaceholder;
+        }, 3000);
+      } catch (error) {
+        showError('Error reading file: ' + error.message);
+      }
+    };
+    
+    reader.onerror = () => {
+      showError('Error reading file. Please try again.');
+    };
+    
+    reader.readAsText(file);
+    
+    // Clear the input so the same file can be selected again
+    e.target.value = '';
   });
 
   let currentTree = null; // Store current Phylocanvas tree instance
