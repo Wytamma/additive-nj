@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Neighbor Joining Tree - Simple Web App</title>
+  <script src="https://unpkg.com/@phylocanvas/phylocanvas.gl@latest/dist/bundle.min.js"></script>
   <style>
     :root { --bg:#0b1020; --panel:#121a33; --muted:#9fb0d0; --text:#e7ecff; --accent:#84a9ff; }
     html,body{height:100%}
@@ -29,7 +30,7 @@
     .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
     .flex{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
     .tag{display:inline-block;background:#1a264f;border:1px solid #2b3d7a;border-radius:999px;padding:2px 8px;font-size:12px}
-    svg{width:100%;height:600px;background:#0b112a;border:1px solid #223067;border-radius:12px}
+    #phylocanvas-container{position:relative;overflow:hidden}
     .footer{color:#9fb0d0;font-size:12px;margin-top:8px}
     .copy-input{width:100%;background:#0c1430;color:var(--text);border:1px solid #223067;border-radius:10px;padding:8px}
     .ok{color:#86efac}
@@ -38,7 +39,7 @@
 </head>
 <body>
   <div class="container">
-    <h1>Neighbor Joining Tree</h1>
+    <h1>Neighbor Joining Tree Additivity Diagnostics</h1>
     <div class="grid">
       <div class="card">
         <h2>Input alignment (FASTA)</h2>
@@ -88,7 +89,7 @@
           <div id="matrix"></div>
           <div style="height:10px"></div>
           <h3 class="muted">Tree</h3>
-          <svg id="tree" viewBox="0 0 1000 600" preserveAspectRatio="xMinYMin"></svg>
+          <div id="phylocanvas-container" style="width:100%;height:600px;background:#0b112a;border:1px solid #223067;border-radius:12px;"></div>
           <div style="height:10px"></div>
           <h3 class="muted">Additivity diagnostics</h3>
           <div id="diag"></div>
@@ -108,7 +109,6 @@
   const matrixEl = document.getElementById('matrix');
   const diagEl = document.getElementById('diag');
   const testsEl = document.getElementById('tests');
-  const svg = document.getElementById('tree');
   const gapModeEl = document.getElementById('gapMode');
   const decimalsEl = document.getElementById('decimals');
   const tagN = document.getElementById('tagN');
@@ -117,6 +117,7 @@
   const chkLabels = document.getElementById('chkLabels');
   const chkResiduals = document.getElementById('chkResiduals');
   const tolEl = document.getElementById('tol');
+  const phylocanvasContainer = document.getElementById('phylocanvas-container');
 
   // Example alignment with small differences
   const exampleFASTA = `>A\nACGTACGTACGT\n>B\nACGTAC-TACTT\n>C\nACGTACTTACGT\n>D\nACGTACGTTCGT\n`;
@@ -128,7 +129,7 @@
     matrixEl.replaceChildren();
     diagEl.replaceChildren();
     testsEl.replaceChildren();
-    clearSVG();
+    clearTreeViz();
   });
 
   document.getElementById('btnDownload').addEventListener('click', () => {
@@ -158,6 +159,8 @@
     }
   });
 
+  let currentTree = null; // Store current Phylocanvas tree instance
+
   function showError(msg){
     errEl.textContent = msg;
     errEl.style.display = 'block';
@@ -169,7 +172,7 @@
     matrixEl.replaceChildren();
     diagEl.replaceChildren();
     testsEl.replaceChildren();
-    clearSVG();
+    clearTreeViz();
 
     const raw = fastaEl.value.trim();
     if (!raw){ showError('Please paste a FASTA alignment.'); return; }
@@ -197,7 +200,7 @@
     const newick = toNewick(rooted, Number(decimalsEl.value));
     newickEl.value = newick;
 
-    drawTree(rooted);
+    drawTree(rooted, newick);
 
     if (chkResiduals.checked){
       const Dp = computePatristicMatrix(rooted, labels);
@@ -371,71 +374,40 @@
     return walk(node) + ';'
   }
 
-  // Simple horizontal tree drawing - cladogram scaled by branch length
-  function drawTree(root){
-    clearSVG();
-    const margin = {top:20,right:20,bottom:20,left:120};
-    const width = svg.viewBox.baseVal.width;
-    const height = svg.viewBox.baseVal.height;
-
-    // Gather leaves in order and compute y positions
-    const leaves = getLeaves(root);
-
-    const yStep = (height - margin.top - margin.bottom) / Math.max(1, leaves.length - 1);
-    const yPos = new Map();
-    leaves.forEach((leaf, idx) => { yPos.set(leaf, margin.top + idx*yStep); });
-
-    // Compute x as cumulative branch length, then scale to width
-    function maxDepth(n, acc){
-      if (!n.children || n.children.length===0) return acc;
-      return Math.max(...n.children.map(ch => maxDepth(ch.node, acc + ch.length)));
+  // Phylocanvas tree rendering
+  function drawTree(root, newick) {
+    // Clear any existing tree
+    phylocanvasContainer.innerHTML = '';
+    
+    if (typeof phylocanvas === 'undefined') {
+      phylocanvasContainer.innerHTML = '<p style="color: var(--muted); padding: 20px; text-align: center;">Phylocanvas library not loaded</p>';
+      return;
     }
-    const totalLen = maxDepth(root, 0) || 1;
-    const scaleX = (x) => margin.left + (x / totalLen) * (width - margin.left - margin.right);
 
-    const coords = new Map();
-    function layout(n, x){
-      if (!n.children || n.children.length===0){
-        const y = yPos.get(n);
-        const pt = {x: scaleX(x), y};
-        coords.set(n, pt);
-        return pt;
-      }
-      const childPts = n.children.map(ch => layout(ch.node, x + ch.length));
-      const y = (Math.min(...childPts.map(p=>p.y)) + Math.max(...childPts.map(p=>p.y)))/2;
-      const pt = {x: scaleX(x), y};
-      coords.set(n, pt);
-      // Draw connectors: vertical line between children and horizontal to each child
-      const y1 = Math.min(...childPts.map(p=>p.y));
-      const y2 = Math.max(...childPts.map(p=>p.y));
-      line(pt.x, y1, pt.x, y2);
-      for (let k=0;k<n.children.length;k++){
-        const ch = n.children[k];
-        const cp = childPts[k];
-        line(pt.x, cp.y, cp.x, cp.y);
-        if (chkLabels.checked){
-          const midx = (pt.x + cp.x)/2;
-          const midy = cp.y - 6; // small offset above line
-          label(Number(ch.length).toFixed(Number(decimalsEl.value)), midx, midy, 'middle');
+    try {
+      currentTree = new phylocanvas.PhylocanvasGL(
+        phylocanvasContainer,
+        {
+          size: { width: phylocanvasContainer.offsetWidth, height: 600 },
+          source: newick,
+          type: phylocanvas.TreeTypes.Rectangular,
+          showLabels: true,
+          showBranchLengths: chkLabels.checked,
+          interactive: true,
+          padding: 40,
+          strokeColour: '#ecf0f1',
+          fillColour: '#84a9ff',
+          fontColour: '#e7ecff',
+          showLeafLabels: true, 
         }
-      }
-      return pt;
+      );
+    } catch (error) {
+      console.error('Phylocanvas error:', error);
+      phylocanvasContainer.innerHTML = `<p style="color: var(--muted); padding: 20px; text-align: center;">Error rendering tree: ${error.message}</p>`;
     }
-
-    layout(root, 0);
-
-    // Leaf labels
-    for (const leaf of leaves){
-      const {x,y} = coords.get(leaf);
-      text(leaf.name, x+6, y+4, 'start');
-    }
-
-    // Scale legend
-    const legendLen = totalLen/5; // 20 percent of total
-    const x0 = margin.left, y0 = height - 10;
-    line(x0, y0, x0 + (width - margin.left - margin.right)/5, y0);
-    text((legendLen).toFixed(3), x0, y0-6, 'start');
   }
+
+
 
   // Utility to collect leaves
   function getLeaves(root){
@@ -447,32 +419,8 @@
     return leaves;
   }
 
-  function clearSVG(){ while (svg.firstChild) svg.removeChild(svg.firstChild); }
-  function line(x1,y1,x2,y2){
-    const el = document.createElementNS('http://www.w3.org/2000/svg','line');
-    el.setAttribute('x1', x1); el.setAttribute('y1', y1);
-    el.setAttribute('x2', x2); el.setAttribute('y2', y2);
-    el.setAttribute('stroke', '#cfe0ff'); el.setAttribute('stroke-width', '1.5');
-    svg.appendChild(el);
-  }
-  function text(str,x,y,anchor){
-    const el = document.createElementNS('http://www.w3.org/2000/svg','text');
-    el.setAttribute('x', x); el.setAttribute('y', y);
-    el.setAttribute('dominant-baseline','middle');
-    el.setAttribute('text-anchor', anchor || 'middle');
-    el.setAttribute('font-size','12');
-    el.setAttribute('fill','#e7ecff');
-    el.textContent = str;
-    svg.appendChild(el);
-  }
-  function label(str,x,y,anchor){
-    const el = document.createElementNS('http://www.w3.org/2000/svg','text');
-    el.setAttribute('x', x); el.setAttribute('y', y);
-    el.setAttribute('text-anchor', anchor || 'middle');
-    el.setAttribute('font-size','11');
-    el.setAttribute('fill','#9fb0d0');
-    el.textContent = str;
-    svg.appendChild(el);
+  function clearTreeViz(){
+    phylocanvasContainer.innerHTML = '';
   }
 
   function renderMatrix(labels, D){
