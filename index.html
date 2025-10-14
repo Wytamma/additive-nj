@@ -45,7 +45,8 @@
         <div class="content">
           <textarea id="fasta"></textarea>
           <div class="row" style="margin-top:10px">
-            <label><input type="radio" name="model" value="p" checked> p-distance</label>
+              <label><input type="radio" name="model" value="snp" checked> SNP distance</label>
+            <label><input type="radio" name="model" value="p"> p-distance</label>
             <label><input type="radio" name="model" value="k2p"> Kimura 2-parameter</label>
           </div>
           <div class="row" style="margin-top:6px">
@@ -181,7 +182,8 @@
     for (const s of seqs){ if (s.length !== L){ showError('All sequences must have the same length. Found lengths like ' + L + ' and ' + s.length + '.'); return; } }
 
     const model = document.querySelector('input[name="model"]:checked').value;
-    tagModel.textContent = 'Model: ' + model;
+    const modelNames = { 'p': 'p-distance', 'k2p': 'Kimura 2P', 'snp': 'SNP distance' };
+    tagModel.textContent = 'Model: ' + (modelNames[model] || model);
     tagN.textContent = 'Taxa: ' + labels.length;
     tagL.textContent = 'Length: ' + L;
 
@@ -262,6 +264,8 @@
           } else {
             dist = -0.5*Math.log(t1) - 0.25*Math.log(t2);
           }
+        } else if (opts.model === 'snp'){
+          dist = mism; // Raw SNP count
         } else {
           dist = mism/comp;
         }
@@ -473,6 +477,7 @@
   }
 
   function renderMatrix(labels, D){
+    const model = document.querySelector('input[name="model"]:checked').value;
     const tbl = document.createElement('table');
     const thead = document.createElement('thead');
     const hr = document.createElement('tr');
@@ -488,7 +493,14 @@
       for (let j=0;j<labels.length;j++){
         const td = document.createElement('td');
         const v = D[i][j];
-        td.textContent = (i===j) ? '0' : Number.isFinite(v) ? v.toFixed(5) : 'Inf';
+        if (i === j) {
+          td.textContent = '0';
+        } else if (!Number.isFinite(v)) {
+          td.textContent = 'Inf';
+        } else {
+          // Show integers for SNP distances, decimals for others
+          td.textContent = model === 'snp' ? Math.round(v).toString() : v.toFixed(5);
+        }
         tr.appendChild(td);
       }
       tb.appendChild(tr);
