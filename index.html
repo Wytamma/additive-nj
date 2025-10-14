@@ -91,17 +91,19 @@
             <span class="tag" id="tagL">Length: 0</span>
             <span class="tag" id="tagModel">Model: p</span>
           </div>
+          <h3 class="muted">Residuals matrix</h3>
+          <div id="residualsMatrix"></div>
+          <h3 class="muted">Distance matrix</h3>
+          <div id="matrix"></div>
           <h3 class="muted">Additivity diagnostics</h3>
           <div id="diag"></div>
+          <div id="matrixHelp" class="muted" style="margin-top:12px;display:none;"></div>
           <div style="height:10px"></div>
           <h3 class="muted">Tree</h3>
           <div id="phylocanvas-container" style="width:100%;height:600px;background:#0b112a;border:1px solid #223067;border-radius:12px;"></div>
           <div style="height:10px"></div>
           <h3 class="muted">Newick</h3>
           <input id="newick" class="copy-input mono" readonly>
-          <div style="height:10px"></div>
-          <h3 class="muted">Distance matrix</h3>
-          <div id="matrix"></div>
           <div style="height:10px"></div>
           <h3 class="muted">Self test results</h3>
           <div id="tests" class="mono"></div>
@@ -137,6 +139,8 @@
     errEl.style.display = 'none';
     newickEl.value = '';
     matrixEl.replaceChildren();
+    document.getElementById('matrixHelp').style.display = 'none';
+    document.getElementById('residualsMatrix').replaceChildren();
     diagEl.replaceChildren();
     testsEl.replaceChildren();
     clearTreeViz();
@@ -184,6 +188,8 @@
         clearError();
         newickEl.value = '';
         matrixEl.replaceChildren();
+        document.getElementById('matrixHelp').style.display = 'none';
+        document.getElementById('residualsMatrix').replaceChildren();
         diagEl.replaceChildren();
         testsEl.replaceChildren();
         clearTreeViz();
@@ -220,6 +226,8 @@
   function run(){
     clearError();
     matrixEl.replaceChildren();
+    document.getElementById('matrixHelp').style.display = 'none';
+    document.getElementById('residualsMatrix').replaceChildren();
     diagEl.replaceChildren();
     testsEl.replaceChildren();
     clearTreeViz();
@@ -262,6 +270,11 @@
       const Dp = computePatristicMatrix(rooted, labels);
       const res = compareMatrices(D, Dp);
       const quartet = quartetDiagnostics(D, labels, Number(tolEl.value));
+      renderMatrix(labels, res.residuals, { 
+        isResiduals: true, 
+        title: 'Residuals Matrix',
+        fontSize: '11px'
+      });
       renderDiagnostics(res, quartet, labels);
     }
   }
@@ -578,9 +591,26 @@
     phylocanvasContainer.innerHTML = '';
   }
 
-  function renderMatrix(labels, D){
+  function renderMatrix(labels, D, options = {}){
+    const { 
+      isResiduals = false, 
+      targetElement = null, 
+      title = null,
+      fontSize = null 
+    } = options;
+    
     const model = document.querySelector('input[name="model"]:checked').value;
+    
+    // Create container (card for residuals, direct table for regular matrix)
+    let container;
+    if (isResiduals) {
+      container = document.createElement('div');
+      container.className = 'card';
+    }
+    
     const tbl = document.createElement('table');
+    if (fontSize) tbl.style.fontSize = fontSize;
+    
     const thead = document.createElement('thead');
     const hr = document.createElement('tr');
     hr.appendChild(document.createElement('th'));
@@ -588,7 +618,8 @@
     // Only show column headers up to the current row (triangular)
     for (let j = 0; j < labels.length; j++){
       const th = document.createElement('th'); 
-      th.textContent = labels[j]; 
+      th.textContent = labels[j];
+      if (isResiduals) th.style.fontSize = '10px';
       hr.appendChild(th);
     }
     thead.appendChild(hr);
@@ -598,7 +629,8 @@
     for (let i = 0; i < labels.length; i++){
       const tr = document.createElement('tr');
       const th = document.createElement('th'); 
-      th.textContent = labels[i]; 
+      th.textContent = labels[i];
+      if (isResiduals) th.style.fontSize = '10px';
       tr.appendChild(th);
       
       // Lower triangular matrix: only show j <= i
@@ -614,8 +646,26 @@
           td.textContent = 'Inf';
           td.style.color = '#fca5a5';
         } else {
-          // Show integers for SNP distances, decimals for others
-          td.textContent = model === 'snp' ? Math.round(v).toString() : v.toFixed(5);
+          if (isResiduals) {
+            // Residuals matrix formatting and coloring
+            td.textContent = v.toFixed(4);
+            const absV = Math.abs(v);
+            
+            // Color coding based on residual magnitude
+            if (absV < 0.001) {
+              td.style.backgroundColor = '#0f3f0f'; // Very good (dark green)
+              td.style.color = '#86efac';
+            } else if (absV < 0.01) {
+              td.style.backgroundColor = '#2a2a0f'; // Good (dark yellow)
+              td.style.color = '#fbbf24';
+            } else {
+              td.style.backgroundColor = '#3f0f0f'; // Poor (dark red)
+              td.style.color = '#fca5a5';
+            }
+          } else {
+            // Regular distance matrix formatting
+            td.textContent = model === 'snp' ? Math.round(v).toString() : v.toFixed(5);
+          }
         }
         tr.appendChild(td);
       }
@@ -631,7 +681,32 @@
       tb.appendChild(tr);
     }
     tbl.appendChild(tb);
-    matrixEl.replaceChildren(tbl);
+    
+    if (isResiduals) {
+      container.appendChild(tbl);
+      (targetElement || document.getElementById('residualsMatrix')).replaceChildren(container);
+    } else {
+      matrixEl.replaceChildren(tbl);
+    }
+    
+    // Add interpretation help text
+    const matrixHelpEl = document.getElementById('matrixHelp');
+    const modelNames = { 'p': 'p-distance', 'k2p': 'Kimura 2P', 'snp': 'SNP distance' };
+    const hasResiduals = document.getElementById('residualsMatrix').innerHTML !== '';
+    matrixHelpEl.innerHTML = `
+      <strong>Interpretation:</strong> ${hasResiduals ? 
+        `<strong>Residuals Matrix:</strong> The residuals matrix shows the difference between original sequence distances and tree-derived distances (patristic distances). 
+        Each cell contains the residual value (original - tree distance) with color coding: <span style="color: #28a745;">green (&lt;0.1)</span> indicates excellent tree fit, 
+        <span style="color: #ffc107;">yellow (0.1-0.2)</span> shows moderate deviation, and <span style="color: #dc3545;">red (&gt;0.2)</span> indicates poor fit. 
+        Small residuals suggest the tree accurately represents evolutionary distances, while large residuals may indicate non-additive evolution or outlier sequences.<br><br>` : 
+        ''
+      }<strong>Distance Matrix:</strong> The distance matrix shows pairwise ${modelNames[model] || model} values between sequences. 
+      Diagonal values are always 0 (self-distances). Lower values indicate more similar sequences.
+      ${model === 'snp' ? 'Values represent the raw number of differing nucleotide positions.' : ''}
+      ${model === 'p' ? 'Values represent the proportion of differing sites (0-1 scale).' : ''}
+      ${model === 'k2p' ? 'Values account for transition/transversion bias and can exceed 1.' : ''}
+    `;
+    matrixHelpEl.style.display = 'block';
   }
 
   // === Additivity diagnostics ===
@@ -725,6 +800,9 @@
     return {ok, total, passRate: total? ok/total:1, maxDeviation: maxDev};
   }
 
+  // Render residuals matrix in its own section
+
+
   function renderDiagnostics(res, quartet, labels){
     const wrap = document.createElement('div');
     
@@ -780,97 +858,7 @@
     wrap.appendChild(residualsCard);
     wrap.appendChild(fourPointCard);
 
-    // Residuals table with better styling
-    const tableCard = document.createElement('div');
-    tableCard.className = 'card';
-    
-    const tableHeader = document.createElement('h4');
-    tableHeader.textContent = 'Residuals Matrix';
-    tableHeader.style.margin = '0 0 12px 0';
-    tableHeader.style.color = 'var(--accent)';
-    tableHeader.style.fontSize = '14px';
-    
-    const tbl = document.createElement('table');
-    tbl.style.fontSize = '11px';
-    const thead = document.createElement('thead');
-    const hr = document.createElement('tr');
-    hr.appendChild(document.createElement('th'));
-    for (const l of labels){ 
-      const th = document.createElement('th'); 
-      th.textContent = l; 
-      th.style.fontSize = '10px';
-      hr.appendChild(th); 
-    }
-    thead.appendChild(hr); 
-    tbl.appendChild(thead);
-    
-    const tb = document.createElement('tbody');
-    const maxResidual = Math.max(...res.residuals.flat().map(Math.abs));
-    
-    for (let i=0;i<labels.length;i++){
-      const tr = document.createElement('tr');
-      const th = document.createElement('th'); 
-      th.textContent = labels[i]; 
-      th.style.fontSize = '10px';
-      tr.appendChild(th);
-      
-      // Lower triangular matrix: only show j <= i
-      for (let j=0; j<=i; j++){
-        const td = document.createElement('td');
-        const v = res.residuals[i][j];
-        
-        if (i === j) {
-          td.textContent = '0';
-          td.style.backgroundColor = '#1a264f';
-          td.style.fontWeight = 'bold';
-        } else {
-          td.textContent = v.toFixed(4);
-          const absV = Math.abs(v);
-          
-          // Color coding based on residual magnitude
-          if (absV < 0.001) {
-            td.style.backgroundColor = '#0f3f0f'; // Very good (dark green)
-            td.style.color = '#86efac';
-          } else if (absV < 0.01) {
-            td.style.backgroundColor = '#2a2a0f'; // Good (dark yellow)
-            td.style.color = '#fbbf24';
-          } else {
-            td.style.backgroundColor = '#3f0f0f'; // Poor (dark red)
-            td.style.color = '#fca5a5';
-          }
-        }
-        tr.appendChild(td);
-      }
-      
-      // Add empty cells for upper triangle
-      for (let j = i + 1; j < labels.length; j++){
-        const td = document.createElement('td');
-        td.style.backgroundColor = '#0b1020';
-        td.style.border = 'none';
-        tr.appendChild(td);
-      }
-      
-      tb.appendChild(tr);
-    }
-    tbl.appendChild(tb);
-    
-    tableCard.appendChild(tableHeader);
-    tableCard.appendChild(tbl);
-
-    // Improved help text with legend
-    const help = document.createElement('div');
-    help.className = 'muted';
-    help.style.marginTop = '12px';
-    help.innerHTML = `
-      <strong>Interpretation:</strong> Residuals = D<sub>observed</sub> - D<sub>patristic</sub> (tree distances). 
-      For perfectly additive data, all residuals should be ≈0. <br>
-      <span style="color: #86efac">● Green: |residual| < 0.001 (excellent)</span> 
-      <span style="color: #fbbf24">● Yellow: |residual| < 0.01 (good)</span> 
-      <span style="color: #fca5a5">● Red: |residual| ≥ 0.01 (poor fit)</span><br>
-      <strong>Four-point condition:</strong> Tests whether distance data satisfies the tree requirement for all possible quartets.
-    `;
-
-    diagEl.replaceChildren(wrap, tableCard, help);
+    diagEl.replaceChildren(wrap);
   }
 
   // === Self tests ===
