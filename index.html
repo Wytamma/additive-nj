@@ -5,6 +5,414 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Phylogenetic Tree Builder - NJ & UPGMA</title>
   <script src="https://unpkg.com/@phylocanvas/phylocanvas.gl@latest/dist/bundle.min.js"></script>
+  <script id="worker-script" type="text/plain">
+    // Web Worker for computationally intensive phylogenetic operations
+    
+    function computeDistanceMatrix(labels, seqs, opts){
+      const n = labels.length;
+      const D = Array(n).fill(null).map(() => Array(n).fill(0));
+      const model = opts.model || 'p';
+      const gapMode = opts.gapMode || 'pairwise';
+      
+      for (let i=0; i<n; i++){
+        for (let j=i+1; j<n; j++){
+          let dist = 0;
+          if (model === 'snp'){
+            if (gapMode === 'complete'){
+              let valid = true;
+              for (let k=0; k<seqs[i].length; k++){
+                if (seqs[i][k] === '-' || seqs[j][k] === '-'){ valid=false; break; }
+              }
+              if (!valid) { D[i][j] = D[j][i] = Infinity; continue; }
+            }
+            
+            let diffs=0, sites=0;
+            for (let k=0; k<seqs[i].length; k++){
+              if (gapMode === 'pairwise' && (seqs[i][k] === '-' || seqs[j][k] === '-')) continue;
+              sites++;
+              if (seqs[i][k] !== seqs[j][k]) diffs++;
+            }
+            dist = diffs;
+          } else {
+            let diffs=0, sites=0;
+            for (let k=0; k<seqs[i].length; k++){
+              if (gapMode === 'pairwise' && (seqs[i][k] === '-' || seqs[j][k] === '-')) continue;
+              sites++;
+              if (seqs[i][k] !== seqs[j][k]) diffs++;
+            }
+            if (sites === 0) { D[i][j] = D[j][i] = Infinity; continue; }
+            
+            const p = diffs / sites;
+            if (model === 'p'){
+              dist = p;
+            } else if (model === 'k2p'){
+              let transitions=0, transversions=0;
+              for (let k=0; k<seqs[i].length; k++){
+                if (gapMode === 'pairwise' && (seqs[i][k] === '-' || seqs[j][k] === '-')) continue;
+                if (seqs[i][k] !== seqs[j][k]){
+                  const pair = seqs[i][k] + seqs[j][k];
+                  if (pair === 'AG' || pair === 'GA' || pair === 'CT' || pair === 'TC'){
+                    transitions++;
+                  } else {
+                    transversions++;
+                  }
+                }
+              }
+              const P = transitions / sites;
+              const Q = transversions / sites;
+              if (1 - 2*P - Q <= 0 || 1 - 2*Q <= 0) { D[i][j] = D[j][i] = Infinity; continue; }
+              dist = -0.5 * Math.log((1-2*P-Q) * Math.sqrt(1-2*Q));
+            }
+          }
+          D[i][j] = D[j][i] = dist;
+        }
+      }
+      return {D};
+    }
+
+    function neighborJoining(Dinit, labelsInit){
+      const n = labelsInit.length;
+      if (n < 3) return null;
+      
+      let D = Dinit.map(row => row.slice());
+      let labels = labelsInit.slice();
+      let nodes = labels.map(l => ({name: l, children: []}));
+      let nodeId = n;
+      
+      while (nodes.length > 2){
+        const m = nodes.length;
+        const r = Array(m).fill(0);
+        
+        for (let i=0; i<m; i++){
+          for (let j=0; j<m; j++){
+            if (i !== j) r[i] += D[i][j];
+          }
+          r[i] /= (m - 2);
+        }
+        
+        let minQ = Infinity, mini = -1, minj = -1;
+        for (let i=0; i<m-1; i++){
+          for (let j=i+1; j<m; j++){
+            const Q = D[i][j] - r[i] - r[j];
+            if (Q < minQ){ minQ = Q; mini = i; minj = j; }
+          }
+        }
+        
+        const diu = (D[mini][minj] + r[mini] - r[minj]) / 2;
+        const dju = D[mini][minj] - diu;
+        
+        const newNode = {
+          name: `node${nodeId++}`,
+          children: [
+            {node: nodes[mini], length: Math.max(0, diu)},
+            {node: nodes[minj], length: Math.max(0, dju)}
+          ]
+        };
+        
+        const newD = [];
+        const newNodes = [];
+        const newLabels = [];
+        
+        for (let k=0; k<m; k++){
+          if (k === mini || k === minj) continue;
+          newNodes.push(nodes[k]);
+          newLabels.push(labels[k]);
+        }
+        newNodes.push(newNode);
+        newLabels.push(newNode.name);
+        
+        const nm = newNodes.length;
+        for (let i=0; i<nm; i++) newD[i] = Array(nm).fill(0);
+        
+        let idx = 0;
+        for (let i=0; i<m; i++){
+          if (i === mini || i === minj) continue;
+          let jdx = 0;
+          for (let j=0; j<m; j++){
+            if (j === mini || j === minj) continue;
+            newD[idx][jdx] = D[i][j];
+            jdx++;
+          }
+          
+          const dik = (D[i][mini] + D[i][minj] - D[mini][minj]) / 2;
+          newD[idx][nm-1] = newD[nm-1][idx] = Math.max(0, dik);
+          idx++;
+        }
+        
+        D = newD;
+        nodes = newNodes;
+        labels = newLabels;
+      }
+      
+      if (nodes.length === 2){
+        return {
+          name: `node${nodeId}`,
+          children: [
+            {node: nodes[0], length: Math.max(0, D[0][1]/2)},
+            {node: nodes[1], length: Math.max(0, D[0][1]/2)}
+          ]
+        };
+      }
+      
+      return nodes[0];
+    }
+
+    function upgma(D, labels){
+      const n = labels.length;
+      if (n < 2) return labels[0] ? {name: labels[0], children: []} : null;
+      
+      let clusters = labels.map(l => ({name: l, children: [], size: 1, height: 0}));
+      let dist = D.map(row => row.slice());
+      let nodeId = n;
+      
+      while (clusters.length > 1){
+        let minD = Infinity, mini = -1, minj = -1;
+        
+        for (let i=0; i<clusters.length-1; i++){
+          for (let j=i+1; j<clusters.length; j++){
+            if (dist[i][j] < minD){
+              minD = dist[i][j];
+              mini = i; minj = j;
+            }
+          }
+        }
+        
+        const newHeight = minD / 2;
+        const newCluster = {
+          name: `node${nodeId++}`,
+          children: [
+            {node: clusters[mini], length: newHeight - clusters[mini].height},
+            {node: clusters[minj], length: newHeight - clusters[minj].height}
+          ],
+          size: clusters[mini].size + clusters[minj].size,
+          height: newHeight
+        };
+        
+        const newClusters = [];
+        const newDist = [];
+        
+        for (let k=0; k<clusters.length; k++){
+          if (k === mini || k === minj) continue;
+          newClusters.push(clusters[k]);
+        }
+        newClusters.push(newCluster);
+        
+        const m = newClusters.length;
+        for (let i=0; i<m; i++) newDist[i] = Array(m).fill(0);
+        
+        let idx = 0;
+        for (let i=0; i<clusters.length; i++){
+          if (i === mini || i === minj) continue;
+          let jdx = 0;
+          for (let j=0; j<clusters.length; j++){
+            if (j === mini || j === minj) continue;
+            newDist[idx][jdx] = dist[i][j];
+            jdx++;
+          }
+          
+          const avgDist = (dist[i][mini] * clusters[mini].size + dist[i][minj] * clusters[minj].size) / 
+                         (clusters[mini].size + clusters[minj].size);
+          newDist[idx][m-1] = newDist[m-1][idx] = avgDist;
+          idx++;
+        }
+        
+        clusters = newClusters;
+        dist = newDist;
+      }
+      
+      return clusters[0];
+    }
+
+    function computePatristicMatrix(tree, labels){
+      const n = labels.length;
+      const D = Array(n).fill(null).map(() => Array(n).fill(0));
+      
+      // Build a map of all nodes and their distances from root
+      const nodeDistances = new Map();
+      const nodeMap = new Map();
+      
+      function traverse(node, distFromRoot = 0) {
+        nodeDistances.set(node, distFromRoot);
+        nodeMap.set(node.name, node);
+        
+        if (node.children) {
+          for (const child of node.children) {
+            traverse(child.node, distFromRoot + (child.length || 0));
+          }
+        }
+      }
+      
+      traverse(tree);
+      
+      // Find LCA and compute patristic distance
+      function findLCA(node1, node2) {
+        // Get all ancestors of node1
+        const ancestors1 = new Set();
+        function getAncestors(node, visited = new Set()) {
+          if (visited.has(node)) return;
+          visited.add(node);
+          ancestors1.add(node);
+          
+          if (node.children) {
+            for (const child of node.children) {
+              if (isDescendant(child.node, node1) || child.node === node1) {
+                getAncestors(child.node, visited);
+              }
+            }
+          }
+        }
+        
+        // Check if target is descendant of current node
+        function isDescendant(current, target) {
+          if (current === target) return true;
+          if (!current.children) return false;
+          
+          for (const child of current.children) {
+            if (isDescendant(child.node, target)) return true;
+          }
+          return false;
+        }
+        
+        // Build path from root to node1
+        function getPathFromRoot(target) {
+          const path = [];
+          
+          function findPath(node) {
+            if (node === target) return [node];
+            if (!node.children) return null;
+            
+            for (const child of node.children) {
+              const childPath = findPath(child.node);
+              if (childPath) return [node, ...childPath];
+            }
+            return null;
+          }
+          
+          return findPath(tree) || [];
+        }
+        
+        // Get paths from root to both nodes
+        const path1 = getPathFromRoot(node1);
+        const path2 = getPathFromRoot(node2);
+        
+        // Find LCA by comparing paths
+        let lca = tree;
+        let i = 0;
+        while (i < path1.length && i < path2.length && path1[i] === path2[i]) {
+          lca = path1[i];
+          i++;
+        }
+        
+        return lca;
+      }
+      
+      function getPatristicDistance(name1, name2) {
+        const node1 = nodeMap.get(name1);
+        const node2 = nodeMap.get(name2);
+        
+        if (!node1 || !node2) return Infinity;
+        if (node1 === node2) return 0;
+        
+        const lca = findLCA(node1, node2);
+        const lcaDistance = nodeDistances.get(lca);
+        const dist1 = nodeDistances.get(node1);
+        const dist2 = nodeDistances.get(node2);
+        
+        return (dist1 - lcaDistance) + (dist2 - lcaDistance);
+      }
+      
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          const dist = getPatristicDistance(labels[i], labels[j]);
+          D[i][j] = D[j][i] = dist;
+        }
+      }
+      
+      return D;
+    }
+
+    function compareMatrices(D1, D2){
+      const n = D1.length;
+      const residuals = Array(n).fill(null).map(() => Array(n).fill(0));
+      let sse = 0, maxAbs = 0, mae = 0, count = 0;
+      
+      for (let i=0; i<n; i++){
+        for (let j=i+1; j<n; j++){
+          const res = D1[i][j] - D2[i][j];
+          residuals[i][j] = residuals[j][i] = res;
+          const absRes = Math.abs(res);
+          sse += res * res;
+          mae += absRes;
+          count++;
+          if (absRes > maxAbs) maxAbs = absRes;
+        }
+      }
+      
+      return {sse, mae: mae/count, maxAbs, residuals};
+    }
+
+    function quartetDiagnostics(D, labels, tolerance){
+      const n = labels.length;
+      if (n < 4) return {ok: 0, total: 0, passRate: 1, maxDeviation: 0};
+      
+      let ok = 0, total = 0, maxDev = 0;
+      
+      for (let a = 0; a < n; a++){
+        for (let b = a + 1; b < n; b++){
+          for (let c = b + 1; c < n; c++){
+            for (let d = c + 1; d < n; d++){
+              total++;
+              const s1 = D[a][b] + D[c][d];
+              const s2 = D[a][c] + D[b][d];
+              const s3 = D[a][d] + D[b][c];
+              const arr = [s1, s2, s3].sort((x, y) => x - y);
+              const dev = Math.abs(arr[0] - arr[1]);
+              if (dev <= tolerance) ok++;
+              if (dev > maxDev) maxDev = dev;
+            }
+          }
+        }
+      }
+      
+      return {ok, total, passRate: total ? ok/total : 1, maxDeviation: maxDev};
+    }
+
+    // Worker message handler
+    self.onmessage = function(e) {
+      const { type, data, id } = e.data;
+      
+      try {
+        let result;
+        
+        switch (type) {
+          case 'computeDistanceMatrix':
+            result = computeDistanceMatrix(data.labels, data.seqs, data.opts);
+            break;
+          case 'neighborJoining':
+            result = neighborJoining(data.D, data.labels);
+            break;
+          case 'upgma':
+            result = upgma(data.D, data.labels);
+            break;
+          case 'computePatristicMatrix':
+            result = computePatristicMatrix(data.tree, data.labels);
+            break;
+          case 'compareMatrices':
+            result = compareMatrices(data.D1, data.D2);
+            break;
+          case 'quartetDiagnostics':
+            result = quartetDiagnostics(data.D, data.labels, data.tolerance);
+            break;
+          default:
+            throw new Error('Unknown operation: ' + type);
+        }
+        
+        self.postMessage({ type: 'success', result, id });
+      } catch (error) {
+        self.postMessage({ type: 'error', error: error.message, id });
+      }
+    };
+  </script>
   <style>
     :root { --bg:#0b1020; --panel:#121a33; --muted:#9fb0d0; --text:#e7ecff; --accent:#84a9ff; }
     html,body{height:100%}
@@ -131,8 +539,81 @@
   const tolEl = document.getElementById('tol');
   const phylocanvasContainer = document.getElementById('phylocanvas-container');
 
+  // Web Worker setup for computationally intensive operations
+  let worker = null;
+  let workerCallbacks = new Map();
+  let callbackId = 0;
+  
+  function initWorker() {
+    if (worker) return;
+    
+    const workerScript = document.getElementById('worker-script').textContent;
+    const blob = new Blob([workerScript], { type: 'application/javascript' });
+    worker = new Worker(URL.createObjectURL(blob));
+    
+    worker.onmessage = function(e) {
+      const { type, result, error, id } = e.data;
+      const callback = workerCallbacks.get(id);
+      if (callback) {
+        workerCallbacks.delete(id);
+        if (type === 'success') {
+          callback.resolve(result);
+        } else {
+          callback.reject(new Error(error));
+        }
+      }
+    };
+    
+    worker.onerror = function(error) {
+      console.error('Worker error:', error);
+      showError('Background computation failed: ' + error.message);
+    };
+  }
+  
+  function callWorker(type, data) {
+    return new Promise((resolve, reject) => {
+      initWorker();
+      const id = ++callbackId;
+      workerCallbacks.set(id, { resolve, reject });
+      worker.postMessage({ type, data, id });
+    });
+  }
+  
+  // Progress indicator
+  function showProgress(message) {
+    // Remove any existing progress indicator first
+    hideProgress();
+    
+    const progressDiv = document.createElement('div');
+    progressDiv.id = 'progress-indicator';
+    progressDiv.style.cssText = `
+      position: fixed; top: 20px; right: 20px; z-index: 1000;
+      background: var(--panel); border: 1px solid var(--accent);
+      border-radius: 8px; padding: 12px 16px; color: var(--text);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    `;
+    progressDiv.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <div style="width: 16px; height: 16px; border: 2px solid var(--accent); 
+                    border-top: 2px solid transparent; border-radius: 50%; 
+                    animation: spin 1s linear infinite;"></div>
+        <span>${message}</span>
+      </div>
+      <style>
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+      </style>
+    `;
+    document.body.appendChild(progressDiv);
+  }
+  
+  function hideProgress() {
+    // Remove all progress indicators (in case there are multiple)
+    const progressDivs = document.querySelectorAll('#progress-indicator');
+    progressDivs.forEach(div => div.remove());
+  }
+
   // Example alignment with small differences
-  const exampleFASTA = `>A\nACGTACGTACGT\n>B\nACGTAC-TACTT\n>C\nACGTACTTACGT\n>D\nACGTACGTTCGT\n`;
+  const exampleFASTA = `>Sample_A\nACGTACGTACGT\n>Sample_B\nACGTAC-TACTT\n>Sample_C\nACGTACTTACGT\n>Sample_D\nACGTACGTTCGT\n`;
 
   document.getElementById('btnExample').addEventListener('click', () => {
     fastaEl.value = exampleFASTA;
@@ -159,8 +640,11 @@
     URL.revokeObjectURL(url);
   });
 
-  document.getElementById('btnRun').addEventListener('click', () => {
-    try { run(); } catch(e){
+  document.getElementById('btnRun').addEventListener('click', async () => {
+    try { 
+      await run(); 
+    } catch(e){
+      hideProgress();
       showError('Unexpected error: ' + e.message);
       console.error(e);
     }
@@ -223,59 +707,94 @@
   }
   function clearError(){ errEl.style.display = 'none'; errEl.textContent = ''; }
 
-  function run(){
-    clearError();
-    matrixEl.replaceChildren();
-    document.getElementById('matrixHelp').style.display = 'none';
-    document.getElementById('residualsMatrix').replaceChildren();
-    diagEl.replaceChildren();
-    testsEl.replaceChildren();
-    clearTreeViz();
+  async function run(){
+    try {
+      clearError();
+      hideProgress();
+      matrixEl.replaceChildren();
+      document.getElementById('matrixHelp').style.display = 'none';
+      document.getElementById('residualsMatrix').replaceChildren();
+      diagEl.replaceChildren();
+      testsEl.replaceChildren();
+      clearTreeViz();
 
-    const raw = fastaEl.value.trim();
-    if (!raw){ showError('Please paste a FASTA alignment.'); return; }
+      const raw = fastaEl.value.trim();
+      if (!raw){ 
+        hideProgress();
+        showError('Please paste a FASTA alignment.'); 
+        return; 
+      }
 
-    const {labels, seqs} = parseFasta(raw);
-    if (labels.length < 3){ showError('Need at least 3 sequences for NJ.'); return; }
+      const {labels, seqs} = parseFasta(raw);
+      if (labels.length < 3){ 
+        hideProgress();
+        showError('Need at least 3 sequences for NJ.'); 
+        return; 
+      }
 
-    // Validate equal lengths
-    const L = seqs[0].length;
-    for (const s of seqs){ if (s.length !== L){ showError('All sequences must have the same length. Found lengths like ' + L + ' and ' + s.length + '.'); return; } }
+      // Validate equal lengths
+      const L = seqs[0].length;
+      for (const s of seqs){ 
+        if (s.length !== L){ 
+          hideProgress();
+          showError('All sequences must have the same length. Found lengths like ' + L + ' and ' + s.length + '.'); 
+          return; 
+        } 
+      }
 
-    const model = document.querySelector('input[name="model"]:checked').value;
-    const modelNames = { 'p': 'p-distance', 'k2p': 'Kimura 2P', 'snp': 'SNP distance' };
-    tagModel.textContent = 'Model: ' + (modelNames[model] || model);
-    tagN.textContent = 'Taxa: ' + labels.length;
-    tagL.textContent = 'Length: ' + L;
+      const model = document.querySelector('input[name="model"]:checked').value;
+      const modelNames = { 'p': 'p-distance', 'k2p': 'Kimura 2P', 'snp': 'SNP distance' };
+      tagModel.textContent = 'Model: ' + (modelNames[model] || model);
+      tagN.textContent = 'Taxa: ' + labels.length;
+      tagL.textContent = 'Length: ' + L;
 
-    const {D} = computeDistanceMatrix(labels, seqs, { model, gapMode: gapModeEl.value });
-    renderMatrix(labels, D);
-
-    // Tree construction
-    const treeMethod = treeMethodEl.value;
-    let tree;
-    if (treeMethod === 'upgma') {
-      tree = upgma(D, labels.slice());
-    } else {
-      tree = neighborJoining(D, labels.slice());
-    }
-    const rooted = tree;
-
-    const newick = toNewick(rooted, Number(decimalsEl.value));
-    newickEl.value = newick;
-
-    drawTree(rooted, newick);
-
-    if (chkResiduals.checked){
-      const Dp = computePatristicMatrix(rooted, labels);
-      const res = compareMatrices(D, Dp);
-      const quartet = quartetDiagnostics(D, labels, Number(tolEl.value));
-      renderMatrix(labels, res.residuals, { 
-        isResiduals: true, 
-        title: 'Residuals Matrix',
-        fontSize: '11px'
+      // Step 1: Compute distance matrix
+      showProgress('Computing distance matrix...');
+      const {D} = await callWorker('computeDistanceMatrix', {
+        labels, seqs, opts: { model, gapMode: gapModeEl.value }
       });
-      renderDiagnostics(res, quartet, labels);
+      renderMatrix(labels, D);
+
+      // Step 2: Tree construction
+      const treeMethod = treeMethodEl.value;
+      showProgress(`Building ${treeMethod.toUpperCase()} tree...`);
+      
+      let tree;
+      if (treeMethod === 'upgma') {
+        tree = await callWorker('upgma', { D, labels: labels.slice() });
+      } else {
+        tree = await callWorker('neighborJoining', { D, labels: labels.slice() });
+      }
+      const rooted = tree;
+
+      const newick = toNewick(rooted, Number(decimalsEl.value));
+      newickEl.value = newick;
+      drawTree(rooted, newick);
+
+      // Step 3: Additivity diagnostics (if enabled)
+      if (chkResiduals.checked){
+        showProgress('Computing additivity diagnostics...');
+        
+        const Dp = await callWorker('computePatristicMatrix', { tree: rooted, labels });
+        const res = await callWorker('compareMatrices', { D1: D, D2: Dp });
+        const quartet = await callWorker('quartetDiagnostics', { 
+          D, labels, tolerance: Number(tolEl.value) 
+        });
+        
+        renderMatrix(labels, res.residuals, { 
+          isResiduals: true, 
+          title: 'Residuals Matrix',
+          fontSize: '11px'
+        });
+        renderDiagnostics(res, quartet, labels);
+      }
+      
+      hideProgress();
+      
+    } catch (error) {
+      hideProgress();
+      showError('Computation failed: ' + error.message);
+      console.error(error);
     }
   }
 
@@ -300,227 +819,7 @@
     return {labels, seqs};
   }
 
-  // Compute distance matrix using p-distance or K2P
-  function computeDistanceMatrix(labels, seqs, opts){
-    const n = labels.length;
-    const D = Array.from({length:n}, () => Array(n).fill(0));
-    const isGapN = (c) => c === '-' || c === 'N' || c === 'X' || c === '?';
-    const transitions = new Set(['AG','GA','CT','TC']);
 
-    for (let i=0;i<n;i++){
-      for (let j=i+1;j<n;j++){
-        let comp=0, mism=0, P=0, Q=0; // P transitions, Q transversions
-        const a = seqs[i], b = seqs[j];
-        for (let k=0;k<a.length;k++){
-          const ai = a[k], bj = b[k];
-          if (opts.gapMode === 'pairwise-exclude' && (isGapN(ai) || isGapN(bj))) continue;
-          comp++;
-          if (ai === bj) continue;
-          if (opts.model === 'k2p'){
-            const pair = ai + bj;
-            const valid = 'ACGT'.includes(ai) && 'ACGT'.includes(bj);
-            if (!valid){ mism++; continue; }
-            if (transitions.has(pair)) P++; else Q++;
-          } else {
-            mism++;
-          }
-        }
-        let dist = 0;
-        if (comp === 0){ dist = 0; } else if (opts.model === 'k2p'){
-          const p = P/comp, q = Q/comp;
-          const t1 = 1 - 2*p - q;
-          const t2 = 1 - 2*q;
-          if (t1 <= 0 || t2 <= 0){
-            dist = Infinity; // saturated
-          } else {
-            dist = -0.5*Math.log(t1) - 0.25*Math.log(t2);
-          }
-        } else if (opts.model === 'snp'){
-          dist = mism; // Raw SNP count
-        } else {
-          dist = mism/comp;
-        }
-        if (opts.model === 'k2p' && !isFinite(dist)) dist = 3.0; // clamp if needed
-        D[i][j] = D[j][i] = dist;
-      }
-    }
-    return {D};
-  }
-
-  // Neighbor Joining implementation - returns a rooted binary tree object
-  function neighborJoining(Dinit, labelsInit){
-    // Work on copies
-    let D = Dinit.map(row => row.slice());
-    let labels = labelsInit.slice();
-    const nodes = new Map(); // label -> node
-    for (const name of labels){ nodes.set(name, { name, children: [] }); }
-
-    while (labels.length > 2){
-      const n = labels.length;
-      // r sums
-      const r = Object.create(null);
-      for (let i=0;i<n;i++){
-        let sum = 0; for (let j=0;j<n;j++) if (i!==j) sum += D[i][j];
-        r[i] = sum;
-      }
-      // Build Q and find min
-      let minVal = Infinity, mini = -1, minj = -1;
-      for (let i=0;i<n;i++){
-        for (let j=i+1;j<n;j++){
-          const q = (n-2)*D[i][j] - r[i] - r[j];
-          if (q < minVal){ minVal = q; mini = i; minj = j; }
-        }
-      }
-      const i = mini, j = minj;
-      const nameI = labels[i], nameJ = labels[j];
-
-      // Limb lengths
-      const Li = 0.5*D[i][j] + (r[i] - r[j])/(2*(n-2));
-      const Lj = D[i][j] - Li;
-
-      // Create new node U
-      const uName = nameI + '_' + nameJ + '#' + (Math.random().toString(36).slice(2,7));
-      const uNode = { name: uName, children: [ {node: nodes.get(nameI), length: Math.max(Li,0)}, {node: nodes.get(nameJ), length: Math.max(Lj,0)} ] };
-      nodes.set(uName, uNode);
-
-      // Build new D with u
-      const newLabels = [];
-      const mapOldToNew = new Map();
-      for (let idx=0; idx<labels.length; idx++) if (idx!==i && idx!==j){
-        newLabels.push(labels[idx]);
-        mapOldToNew.set(idx, newLabels.length-1);
-      }
-      newLabels.push(uName);
-
-      const m = newLabels.length;
-      const D2 = Array.from({length:m}, () => Array(m).fill(0));
-      // Copy old distances for survivors
-      for (let a=0;a<labels.length;a++){
-        if (a===i || a===j) continue;
-        for (let b=a+1;b<labels.length;b++){
-          if (b===i || b===j) continue;
-          const A = mapOldToNew.get(a), B = mapOldToNew.get(b);
-          D2[A][B] = D2[B][A] = D[a][b];
-        }
-      }
-      // Distances from u to others
-      for (let a=0;a<labels.length;a++){
-        if (a===i || a===j) continue;
-        const A = mapOldToNew.get(a);
-        const d = 0.5*(D[i][a] + D[j][a] - D[i][j]);
-        D2[A][m-1] = D2[m-1][A] = d;
-      }
-
-      labels = newLabels;
-      D = D2;
-    }
-
-    // Final join to root
-    const aName = labels[0], bName = labels[1];
-    const aNode = nodes.get(aName), bNode = nodes.get(bName);
-    const dist = D[0][1];
-    const root = { name: 'root', children: [ {node:aNode, length: dist/2}, {node:bNode, length: dist/2} ] };
-    return root;
-  }
-
-  // UPGMA implementation - assumes molecular clock (ultrametric tree)
-  function upgma(Dinit, labelsInit) {
-    // Work on copies
-    let D = Dinit.map(row => row.slice());
-    let labels = labelsInit.slice();
-    const nodes = new Map(); // label -> node
-    const clusterSizes = new Map(); // cluster -> number of sequences
-    
-    // Initialize leaf nodes and cluster sizes
-    for (const name of labels) { 
-      nodes.set(name, { name, children: [] });
-      clusterSizes.set(name, 1);
-    }
-
-    while (labels.length > 1) {
-      const n = labels.length;
-      
-      // Find minimum distance
-      let minDist = Infinity, mini = -1, minj = -1;
-      for (let i = 0; i < n; i++) {
-        for (let j = i + 1; j < n; j++) {
-          if (D[i][j] < minDist) {
-            minDist = D[i][j];
-            mini = i;
-            minj = j;
-          }
-        }
-      }
-      
-      const i = mini, j = minj;
-      const nameI = labels[i], nameJ = labels[j];
-      
-      // Branch lengths from new node to each child (half the distance)
-      const branchLength = minDist / 2;
-      
-      // Create new internal node
-      const uName = nameI + '_' + nameJ + '#' + (Math.random().toString(36).slice(2,7));
-      const uNode = { 
-        name: uName, 
-        children: [
-          { node: nodes.get(nameI), length: branchLength },
-          { node: nodes.get(nameJ), length: branchLength }
-        ] 
-      };
-      nodes.set(uName, uNode);
-      
-      // Update cluster size
-      const newSize = clusterSizes.get(nameI) + clusterSizes.get(nameJ);
-      clusterSizes.set(uName, newSize);
-      
-      // Build new distance matrix with UPGMA averaging
-      const newLabels = [];
-      const mapOldToNew = new Map();
-      for (let idx = 0; idx < labels.length; idx++) {
-        if (idx !== i && idx !== j) {
-          newLabels.push(labels[idx]);
-          mapOldToNew.set(idx, newLabels.length - 1);
-        }
-      }
-      newLabels.push(uName);
-      
-      const m = newLabels.length;
-      const D2 = Array.from({length: m}, () => Array(m).fill(0));
-      
-      // Copy distances between surviving clusters
-      for (let a = 0; a < labels.length; a++) {
-        if (a === i || a === j) continue;
-        for (let b = a + 1; b < labels.length; b++) {
-          if (b === i || b === j) continue;
-          const A = mapOldToNew.get(a), B = mapOldToNew.get(b);
-          D2[A][B] = D2[B][A] = D[a][b];
-        }
-      }
-      
-      // Calculate distances from new cluster to others using UPGMA formula
-      for (let a = 0; a < labels.length; a++) {
-        if (a === i || a === j) continue;
-        const A = mapOldToNew.get(a);
-        const sizeI = clusterSizes.get(nameI);
-        const sizeJ = clusterSizes.get(nameJ);
-        const sizeTotal = sizeI + sizeJ;
-        
-        // UPGMA distance: weighted average by cluster sizes
-        const d = (sizeI * D[i][a] + sizeJ * D[j][a]) / sizeTotal;
-        D2[A][m-1] = D2[m-1][A] = d;
-      }
-      
-      labels = newLabels;
-      D = D2;
-      
-      // Clean up old cluster sizes
-      clusterSizes.delete(nameI);
-      clusterSizes.delete(nameJ);
-    }
-    
-    // Return the final root node
-    return nodes.get(labels[0]);
-  }
 
   // Newick export
   function toNewick(node, decimals=5){
@@ -710,97 +1009,6 @@
   }
 
   // === Additivity diagnostics ===
-  function computePatristicMatrix(root, leafNames){
-    // Build parent pointers and depths from root
-    const parents = new Map();
-    const depths = new Map(); // node -> distance from root
-    (function dfs(n, d){
-      depths.set(n, d);
-      if (!n.children || n.children.length===0) return;
-      for (const ch of n.children){
-        parents.set(ch.node, n);
-        dfs(ch.node, d + ch.length);
-      }
-    })(root, 0);
-
-    // Collect all leaves from the tree
-    const allLeaves = [];
-    (function collect(n){
-      if (!n.children || n.children.length===0){ allLeaves.push(n); return; }
-      for (const ch of n.children) collect(ch.node);
-    })(root);
-
-    // Helper to find LCA depth given two leaves
-    function lcaDepth(a, b){
-      const seen = new Set();
-      let x = a;
-      while (x){ seen.add(x); x = parents.get(x) || null; }
-      let y = b;
-      while (y){ if (seen.has(y)) return depths.get(y); y = parents.get(y) || null; }
-      return 0;
-    }
-
-    const n = leafNames.length;
-    const Dp = Array.from({length:n},()=>Array(n).fill(0));
-    // Map name to node - use all leaves for lookup
-    const nameToNode = new Map(allLeaves.map(n=>[n.name,n]));
-
-    // Use the exact same order as leafNames (which matches the distance matrix)
-    for (let i=0;i<n;i++){
-      for (let j=i+1;j<n;j++){
-        const a = nameToNode.get(leafNames[i]);
-        const b = nameToNode.get(leafNames[j]);
-        if (!a || !b) {
-          console.warn(`Could not find nodes for ${leafNames[i]} or ${leafNames[j]}`);
-          continue;
-        }
-        const dab = depths.get(a) + depths.get(b) - 2*lcaDepth(a,b);
-        Dp[i][j] = Dp[j][i] = dab;
-      }
-    }
-    return Dp;
-  }
-
-  function compareMatrices(D, Dp){
-    const n = D.length;
-    let sse=0, maxAbs=0, mae=0, count=0;
-    const residuals = Array.from({length:n},()=>Array(n).fill(0));
-    for (let i=0;i<n;i++){
-      for (let j=i+1;j<n;j++){
-        const r = D[i][j] - Dp[i][j];
-        residuals[i][j] = residuals[j][i] = r;
-        const a = Math.abs(r);
-        sse += r*r; mae += a; count++; if (a>maxAbs) maxAbs=a;
-      }
-    }
-    return {sse, mae: mae/count, maxAbs, residuals};
-  }
-
-  // Four-point condition diagnostics for all quartets
-  function quartetDiagnostics(D, labels, tol){
-    const n = labels.length;
-    let ok=0, total=0, maxDev=0;
-    function s(i,j){return D[i][j];}
-    for (let a=0;a<n;a++){
-      for (let b=a+1;b<n;b++){
-        for (let c=b+1;c<n;c++){
-          for (let d=c+1;d<n;d++){
-            total++;
-            const s1 = s(a,b)+s(c,d);
-            const s2 = s(a,c)+s(b,d);
-            const s3 = s(a,d)+s(b,c);
-            const arr = [s1,s2,s3].sort((x,y)=>x-y);
-            const dev = Math.abs(arr[0]-arr[1]);
-            if (dev <= tol) ok++;
-            if (dev>maxDev) maxDev=dev;
-          }
-        }
-      }
-    }
-    return {ok, total, passRate: total? ok/total:1, maxDeviation: maxDev};
-  }
-
-  // Render residuals matrix in its own section
 
 
   function renderDiagnostics(res, quartet, labels){
