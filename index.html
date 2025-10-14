@@ -200,11 +200,10 @@
     drawTree(rooted);
 
     if (chkResiduals.checked){
-      const leaves = getLeaves(rooted).map(n => n.name);
-      const Dp = computePatristicMatrix(rooted, leaves);
+      const Dp = computePatristicMatrix(rooted, labels);
       const res = compareMatrices(D, Dp);
-      const quartet = quartetDiagnostics(D, leaves, Number(tolEl.value));
-      renderDiagnostics(res, quartet, leaves);
+      const quartet = quartetDiagnostics(D, labels, Number(tolEl.value));
+      renderDiagnostics(res, quartet, labels);
     }
   }
 
@@ -523,9 +522,10 @@
       }
     })(root, 0);
 
-    const leaves = [];
+    // Collect all leaves from the tree
+    const allLeaves = [];
     (function collect(n){
-      if (!n.children || n.children.length===0){ leaves.push(n); return; }
+      if (!n.children || n.children.length===0){ allLeaves.push(n); return; }
       for (const ch of n.children) collect(ch.node);
     })(root);
 
@@ -541,13 +541,18 @@
 
     const n = leafNames.length;
     const Dp = Array.from({length:n},()=>Array(n).fill(0));
-    // Map name to node
-    const nameToNode = new Map(leaves.map(n=>[n.name,n]));
+    // Map name to node - use all leaves for lookup
+    const nameToNode = new Map(allLeaves.map(n=>[n.name,n]));
 
+    // Use the exact same order as leafNames (which matches the distance matrix)
     for (let i=0;i<n;i++){
       for (let j=i+1;j<n;j++){
         const a = nameToNode.get(leafNames[i]);
         const b = nameToNode.get(leafNames[j]);
+        if (!a || !b) {
+          console.warn(`Could not find nodes for ${leafNames[i]} or ${leafNames[j]}`);
+          continue;
+        }
         const dab = depths.get(a) + depths.get(b) - 2*lcaDepth(a,b);
         Dp[i][j] = Dp[j][i] = dab;
       }
