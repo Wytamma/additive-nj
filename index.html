@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Neighbor Joining Tree - Simple Web App</title>
+  <title>Phylogenetic Tree Builder - NJ & UPGMA</title>
   <script src="https://unpkg.com/@phylocanvas/phylocanvas.gl@latest/dist/bundle.min.js"></script>
   <style>
     :root { --bg:#0b1020; --panel:#121a33; --muted:#9fb0d0; --text:#e7ecff; --accent:#84a9ff; }
@@ -39,7 +39,7 @@
 </head>
 <body>
   <div class="container">
-    <h1>Neighbor Joining Tree Additivity Diagnostics</h1>
+        <h1>Phylogenetic Tree Builder</h1>
     <div class="grid">
       <div class="card">
         <h2>Input alignment (FASTA)</h2>
@@ -57,6 +57,12 @@
                 <option value="treat-mismatch">Treat gaps and N as mismatches</option>
               </select>
             </label>
+            <label>Tree method:
+              <select id="treeMethod">
+                <option value="nj" selected>Neighbor-Joining (NJ)</option>
+                <option value="upgma">UPGMA</option>
+              </select>
+            </label>
             <label>Decimals: <input type="number" id="decimals" value="5" min="2" max="10" step="1"></label>
           </div>
           <div class="row" style="margin-top:8px">
@@ -65,7 +71,7 @@
             <label>Tolerance (ε): <input type="number" id="tol" value="1e-6" step="1e-6"></label>
           </div>
           <div class="row" style="margin-top:10px">
-            <button id="btnRun">Compute NJ tree</button>
+            <button id="btnRun">Build Tree</button>
             <button id="btnExample" class="secondary">Load example</button>
             <button id="btnDownload" class="secondary">Download Newick</button>
             <button id="btnSelfTest" class="secondary">Run self tests</button>
@@ -110,6 +116,7 @@
   const diagEl = document.getElementById('diag');
   const testsEl = document.getElementById('tests');
   const gapModeEl = document.getElementById('gapMode');
+  const treeMethodEl = document.getElementById('treeMethod');
   const decimalsEl = document.getElementById('decimals');
   const tagN = document.getElementById('tagN');
   const tagL = document.getElementById('tagL');
@@ -193,9 +200,15 @@
     const {D} = computeDistanceMatrix(labels, seqs, { model, gapMode: gapModeEl.value });
     renderMatrix(labels, D);
 
-    // Neighbor Joining
-    const tree = neighborJoining(D, labels.slice());
-    const rooted = tree; // The NJ tree is represented with a root created at the final join.
+    // Tree construction
+    const treeMethod = treeMethodEl.value;
+    let tree;
+    if (treeMethod === 'upgma') {
+      tree = upgma(D, labels.slice());
+    } else {
+      tree = neighborJoining(D, labels.slice());
+    }
+    const rooted = tree;
 
     const newick = toNewick(rooted, Number(decimalsEl.value));
     newickEl.value = newick;
@@ -352,6 +365,105 @@
     const dist = D[0][1];
     const root = { name: 'root', children: [ {node:aNode, length: dist/2}, {node:bNode, length: dist/2} ] };
     return root;
+  }
+
+  // UPGMA implementation - assumes molecular clock (ultrametric tree)
+  function upgma(Dinit, labelsInit) {
+    // Work on copies
+    let D = Dinit.map(row => row.slice());
+    let labels = labelsInit.slice();
+    const nodes = new Map(); // label -> node
+    const clusterSizes = new Map(); // cluster -> number of sequences
+    
+    // Initialize leaf nodes and cluster sizes
+    for (const name of labels) { 
+      nodes.set(name, { name, children: [] });
+      clusterSizes.set(name, 1);
+    }
+
+    while (labels.length > 1) {
+      const n = labels.length;
+      
+      // Find minimum distance
+      let minDist = Infinity, mini = -1, minj = -1;
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          if (D[i][j] < minDist) {
+            minDist = D[i][j];
+            mini = i;
+            minj = j;
+          }
+        }
+      }
+      
+      const i = mini, j = minj;
+      const nameI = labels[i], nameJ = labels[j];
+      
+      // Branch lengths from new node to each child (half the distance)
+      const branchLength = minDist / 2;
+      
+      // Create new internal node
+      const uName = nameI + '_' + nameJ + '#' + (Math.random().toString(36).slice(2,7));
+      const uNode = { 
+        name: uName, 
+        children: [
+          { node: nodes.get(nameI), length: branchLength },
+          { node: nodes.get(nameJ), length: branchLength }
+        ] 
+      };
+      nodes.set(uName, uNode);
+      
+      // Update cluster size
+      const newSize = clusterSizes.get(nameI) + clusterSizes.get(nameJ);
+      clusterSizes.set(uName, newSize);
+      
+      // Build new distance matrix with UPGMA averaging
+      const newLabels = [];
+      const mapOldToNew = new Map();
+      for (let idx = 0; idx < labels.length; idx++) {
+        if (idx !== i && idx !== j) {
+          newLabels.push(labels[idx]);
+          mapOldToNew.set(idx, newLabels.length - 1);
+        }
+      }
+      newLabels.push(uName);
+      
+      const m = newLabels.length;
+      const D2 = Array.from({length: m}, () => Array(m).fill(0));
+      
+      // Copy distances between surviving clusters
+      for (let a = 0; a < labels.length; a++) {
+        if (a === i || a === j) continue;
+        for (let b = a + 1; b < labels.length; b++) {
+          if (b === i || b === j) continue;
+          const A = mapOldToNew.get(a), B = mapOldToNew.get(b);
+          D2[A][B] = D2[B][A] = D[a][b];
+        }
+      }
+      
+      // Calculate distances from new cluster to others using UPGMA formula
+      for (let a = 0; a < labels.length; a++) {
+        if (a === i || a === j) continue;
+        const A = mapOldToNew.get(a);
+        const sizeI = clusterSizes.get(nameI);
+        const sizeJ = clusterSizes.get(nameJ);
+        const sizeTotal = sizeI + sizeJ;
+        
+        // UPGMA distance: weighted average by cluster sizes
+        const d = (sizeI * D[i][a] + sizeJ * D[j][a]) / sizeTotal;
+        D2[A][m-1] = D2[m-1][A] = d;
+      }
+      
+      labels = newLabels;
+      D = D2;
+      
+      // Clean up old cluster sizes
+      clusterSizes.delete(nameI);
+      clusterSizes.delete(nameJ);
+    }
+    
+    // Return the final root node
+    return nodes.get(labels[0]);
   }
 
   // Newick export
@@ -598,12 +710,18 @@
       [4, 4, 0, 2],
       [4, 4, 2, 0]
     ];
-    const tree = neighborJoining(D, labels.slice());
-    const Dp = computePatristicMatrix(tree, labels);
-    const res = compareMatrices(D, Dp);
-    const pass1 = res.maxAbs < 1e-9;
+    const njTree = neighborJoining(D, labels.slice());
+    const njDp = computePatristicMatrix(njTree, labels);
+    const njRes = compareMatrices(D, njDp);
+    const pass1 = njRes.maxAbs < 1e-9;
 
-    // Test 2: Four-point violates after perturbation
+    // Test 2: UPGMA with ultrametric data
+    const upgmaTree = upgma(D, labels.slice());
+    const upgmaDp = computePatristicMatrix(upgmaTree, labels);
+    const upgmaRes = compareMatrices(D, upgmaDp);
+    const pass2 = upgmaRes.maxAbs < 1e-9;
+
+    // Test 3: Four-point violates after perturbation
     const D2 = [
       [0, 2.2, 4, 4],
       [2.2, 0, 4, 4],
@@ -611,16 +729,17 @@
       [4, 4, 2, 0]
     ];
     const q = quartetDiagnostics(D2, labels, 1e-6);
-    const pass2 = q.passRate < 1.0;
+    const pass3 = q.passRate < 1.0;
 
-    // Test 3: FASTA parser basic
+    // Test 4: FASTA parser basic
     const parsed = parseFasta('>X\nACGT\n>Y\nAC-T\n');
-    const pass3 = parsed.labels.length === 2 && parsed.seqs[0] === 'ACGT' && parsed.seqs[1] === 'AC-T';
+    const pass4 = parsed.labels.length === 2 && parsed.seqs[0] === 'ACGT' && parsed.seqs[1] === 'AC-T';
 
     out.innerHTML = ''+
-      `<div>Test 1 (additive quartet residuals≈0): <span class="${pass1?'ok':'bad'}">${pass1?'PASS':'FAIL'}</span> (max|res|=${res.maxAbs})</div>`+
-      `<div>Test 2 (four-point detects violation): <span class="${pass2?'ok':'bad'}">${pass2?'PASS':'FAIL'}</span> (passRate=${(100*q.passRate).toFixed(1)}%)</div>`+
-      `<div>Test 3 (FASTA parser): <span class="${pass3?'ok':'bad'}">${pass3?'PASS':'FAIL'}</span></div>`;
+      `<div>Test 1 (NJ additive quartet): <span class="${pass1?'ok':'bad'}">${pass1?'PASS':'FAIL'}</span> (max|res|=${njRes.maxAbs})</div>`+
+      `<div>Test 2 (UPGMA ultrametric data): <span class="${pass2?'ok':'bad'}">${pass2?'PASS':'FAIL'}</span> (max|res|=${upgmaRes.maxAbs})</div>`+
+      `<div>Test 3 (four-point detects violation): <span class="${pass3?'ok':'bad'}">${pass3?'PASS':'FAIL'}</span> (passRate=${(100*q.passRate).toFixed(1)}%)</div>`+
+      `<div>Test 4 (FASTA parser): <span class="${pass4?'ok':'bad'}">${pass4?'PASS':'FAIL'}</span></div>`;
 
     testsEl.appendChild(out);
   }

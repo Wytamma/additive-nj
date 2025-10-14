@@ -1,8 +1,12 @@
-# Additive Neighbor-Joining Tree
+# Phylogenetic Tree Builder
 
-A modern web-based tool for constructing phylogenetic trees using the Neighbor-Joining algorithm with additivity diagnostics.
+A modern web-based tool for constructing phylogenetic trees using Neighbor-Joining (NJ) and UPGMA algorithms with comprehensive additivity diagnostics.
 
 ## Features
+
+- **Multiple Tree Building Methods**
+  - Neighbor-Joining (NJ) - Optimal for additive distance data
+  - UPGMA - Assumes molecular clock (ultrametric trees)
 
 - **Multiple Distance Models**
   - SNP distance (raw count of mutations)
@@ -26,9 +30,10 @@ A modern web-based tool for constructing phylogenetic trees using the Neighbor-J
 ## Usage
 
 1. **Input Data**: Paste your FASTA alignment into the text area
-2. **Choose Model**: Select your preferred distance calculation method
-3. **Configure Settings**: Adjust gap handling, decimals, and diagnostics options
-4. **Compute Tree**: Click "Compute NJ tree" to generate results
+2. **Choose Distance Model**: Select your preferred distance calculation method
+3. **Select Tree Method**: Choose between Neighbor-Joining or UPGMA
+4. **Configure Settings**: Adjust gap handling, decimals, and diagnostics options
+5. **Build Tree**: Click "Build Tree" to generate results
 
 ## Example
 
@@ -42,6 +47,12 @@ Click "Load example" to see the tool in action with sample sequences.
 - **Additivity Diagnostics**: Assess how well your data fits a tree model
 
 ## Technical Details
+
+### Tree Building Methods
+
+- **Neighbor-Joining (NJ)**: A distance-based method that produces unrooted trees without assuming a molecular clock. Optimal for additive distance data where evolutionary rates can vary across lineages. Best choice for most phylogenetic analyses.
+
+- **UPGMA (Unweighted Pair Group Method with Arithmetic Mean)**: Assumes a molecular clock and produces rooted, ultrametric trees where all tips are equidistant from the root. Best for closely related sequences with relatively constant evolutionary rates.
 
 ### Distance Models
 
@@ -61,7 +72,8 @@ The tool evaluates how well your distance data conforms to a tree structure:
 ### Self Tests
 
 Built-in validation ensures the algorithms work correctly:
-- Tests additive quartet reconstruction
+- Tests NJ reconstruction of additive quartets
+- Tests UPGMA reconstruction of ultrametric data  
 - Validates four-point condition detection
 - Verifies FASTA parsing
 
@@ -73,8 +85,22 @@ This tool runs entirely in your browser - no data is sent to external servers.
 
 Requires a modern browser with WebGL support for optimal tree visualization.
 
+## Method Selection Guide
+
+**Choose Neighbor-Joining when:**
+- You don't assume a molecular clock
+- Working with sequences that may have variable evolutionary rates
+- You need an unrooted tree
+- Your data fits an additive tree model
+
+**Choose UPGMA when:**
+- You assume a molecular clock (constant evolutionary rate)
+- Working with closely related sequences
+- You need a rooted tree with time information
+- Your sequences evolved at similar rates
+
 ## Credits
 
-- Neighbor-Joining algorithm implementation
-- Phylocanvas.gl for tree visualization
+- Neighbor-Joining and UPGMA algorithm implementations
+- Phylocanvas.gl for interactive tree visualization
 - Built with vanilla JavaScript and modern web standards
