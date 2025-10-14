@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Neighbor Joining Tree - Simple Web App</title>
+  <style>
+    :root { --bg:#0b1020; --panel:#121a33; --muted:#9fb0d0; --text:#e7ecff; --accent:#84a9ff; }
+    html,body{height:100%}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Inter,Arial,sans-serif;background:var(--bg);color:var(--text);}
+    .container{max-width:1100px;margin:0 auto;padding:24px}
+    h1{font-size:24px;margin:0 0 12px}
+    .grid{display:grid;grid-template-columns:1fr;gap:16px}
+    @media (min-width: 960px){ .grid{grid-template-columns: 480px 1fr} }
+    .card{background:var(--panel);border:1px solid #1e2a57;border-radius:14px;box-shadow:0 6px 30px rgba(0,0,0,0.35);}
+    .card h2{font-size:16px;margin:0;padding:12px 14px;border-bottom:1px solid #1e2a57;color:#cfe0ff}
+    .card .content{padding:14px}
+    textarea{width:100%;min-height:260px;resize:vertical;background:#0c1430;color:var(--text);border:1px solid #223067;border-radius:10px;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+    label{display:inline-flex;align-items:center;gap:8px;color:#cfe0ff}
+    .row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+    select, input[type="number"], input[type="text"]{background:#0c1430;color:var(--text);border:1px solid #223067;border-radius:10px;padding:8px}
+    button{background:linear-gradient(180deg,#8cb0ff,#789cff);border:none;color:#071230;border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer}
+    button.secondary{background:#1a264f;color:#cfe0ff;border:1px solid #2b3d7a}
+    .muted{color:var(--muted);font-size:12px}
+    .error{background:#2a1230;border:1px solid #7a2b6b;color:#ffd7f1;padding:10px;border-radius:10px;margin-top:10px;white-space:pre-wrap}
+    table{width:100%;border-collapse:collapse;font-size:12px}
+    th,td{border:1px solid #223067;padding:6px 8px;text-align:right}
+    th{background:#0c1430;text-align:center}
+    .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+    .flex{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .tag{display:inline-block;background:#1a264f;border:1px solid #2b3d7a;border-radius:999px;padding:2px 8px;font-size:12px}
+    svg{width:100%;height:600px;background:#0b112a;border:1px solid #223067;border-radius:12px}
+    .footer{color:#9fb0d0;font-size:12px;margin-top:8px}
+    .copy-input{width:100%;background:#0c1430;color:var(--text);border:1px solid #223067;border-radius:10px;padding:8px}
+    .ok{color:#86efac}
+    .bad{color:#fca5a5}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Neighbor Joining Tree</h1>
+    <div class="grid">
+      <div class="card">
+        <h2>Input alignment (FASTA)</h2>
+        <div class="content">
+          <textarea id="fasta"></textarea>
+          <div class="row" style="margin-top:10px">
+            <label><input type="radio" name="model" value="p" checked> p-distance</label>
+            <label><input type="radio" name="model" value="k2p"> Kimura 2-parameter</label>
+          </div>
+          <div class="row" style="margin-top:6px">
+            <label>Handle gaps: 
+              <select id="gapMode">
+                <option value="pairwise-exclude" selected>Pairwise exclude gap or N sites</option>
+                <option value="treat-mismatch">Treat gaps and N as mismatches</option>
+              </select>
+            </label>
+            <label>Decimals: <input type="number" id="decimals" value="5" min="2" max="10" step="1"></label>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <label><input type="checkbox" id="chkLabels" checked> Label branch lengths on tree</label>
+            <label><input type="checkbox" id="chkResiduals" checked> Compute additivity diagnostics</label>
+            <label>Tolerance (ε): <input type="number" id="tol" value="1e-6" step="1e-6"></label>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button id="btnRun">Compute NJ tree</button>
+            <button id="btnExample" class="secondary">Load example</button>
+            <button id="btnDownload" class="secondary">Download Newick</button>
+            <button id="btnSelfTest" class="secondary">Run self tests</button>
+          </div>
+          <div class="footer">This runs fully in your browser. No data leaves your machine.</div>
+          <div id="err" class="error" style="display:none"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Outputs</h2>
+        <div class="content">
+          <div class="flex">
+            <span class="tag" id="tagN">Taxa: 0</span>
+            <span class="tag" id="tagL">Length: 0</span>
+            <span class="tag" id="tagModel">Model: p</span>
+          </div>
+          <h3 class="muted">Newick</h3>
+          <input id="newick" class="copy-input mono" readonly>
+          <div style="height:10px"></div>
+          <h3 class="muted">Distance matrix</h3>
+          <div id="matrix"></div>
+          <div style="height:10px"></div>
+          <h3 class="muted">Tree</h3>
+          <svg id="tree" viewBox="0 0 1000 600" preserveAspectRatio="xMinYMin"></svg>
+          <div style="height:10px"></div>
+          <h3 class="muted">Additivity diagnostics</h3>
+          <div id="diag"></div>
+          <div style="height:10px"></div>
+          <h3 class="muted">Self test results</h3>
+          <div id="tests" class="mono"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const fastaEl = document.getElementById('fasta');
+  const errEl = document.getElementById('err');
+  const newickEl = document.getElementById('newick');
+  const matrixEl = document.getElementById('matrix');
+  const diagEl = document.getElementById('diag');
+  const testsEl = document.getElementById('tests');
+  const svg = document.getElementById('tree');
+  const gapModeEl = document.getElementById('gapMode');
+  const decimalsEl = document.getElementById('decimals');
+  const tagN = document.getElementById('tagN');
+  const tagL = document.getElementById('tagL');
+  const tagModel = document.getElementById('tagModel');
+  const chkLabels = document.getElementById('chkLabels');
+  const chkResiduals = document.getElementById('chkResiduals');
+  const tolEl = document.getElementById('tol');
+
+  // Example alignment with small differences
+  const exampleFASTA = `>A\nACGTACGTACGT\n>B\nACGTAC-TACTT\n>C\nACGTACTTACGT\n>D\nACGTACGTTCGT\n`;
+
+  document.getElementById('btnExample').addEventListener('click', () => {
+    fastaEl.value = exampleFASTA;
+    errEl.style.display = 'none';
+    newickEl.value = '';
+    matrixEl.replaceChildren();
+    diagEl.replaceChildren();
+    testsEl.replaceChildren();
+    clearSVG();
+  });
+
+  document.getElementById('btnDownload').addEventListener('click', () => {
+    if (!newickEl.value) return;
+    const blob = new Blob([newickEl.value + "\n"], {type: 'text/plain'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'tree.nwk';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  document.getElementById('btnRun').addEventListener('click', () => {
+    try { run(); } catch(e){
+      showError('Unexpected error: ' + e.message);
+      console.error(e);
+    }
+  });
+
+  document.getElementById('btnSelfTest').addEventListener('click', () => {
+    try { runSelfTests(); } catch(e){
+      testsEl.textContent = 'Self tests crashed: ' + e.message;
+      console.error(e);
+    }
+  });
+
+  function showError(msg){
+    errEl.textContent = msg;
+    errEl.style.display = 'block';
+  }
+  function clearError(){ errEl.style.display = 'none'; errEl.textContent = ''; }
+
+  function run(){
+    clearError();
+    matrixEl.replaceChildren();
+    diagEl.replaceChildren();
+    testsEl.replaceChildren();
+    clearSVG();
+
+    const raw = fastaEl.value.trim();
+    if (!raw){ showError('Please paste a FASTA alignment.'); return; }
+
+    const {labels, seqs} = parseFasta(raw);
+    if (labels.length < 3){ showError('Need at least 3 sequences for NJ.'); return; }
+
+    // Validate equal lengths
+    const L = seqs[0].length;
+    for (const s of seqs){ if (s.length !== L){ showError('All sequences must have the same length. Found lengths like ' + L + ' and ' + s.length + '.'); return; } }
+
+    const model = document.querySelector('input[name="model"]:checked').value;
+    tagModel.textContent = 'Model: ' + model;
+    tagN.textContent = 'Taxa: ' + labels.length;
+    tagL.textContent = 'Length: ' + L;
+
+    const {D} = computeDistanceMatrix(labels, seqs, { model, gapMode: gapModeEl.value });
+    renderMatrix(labels, D);
+
+    // Neighbor Joining
+    const tree = neighborJoining(D, labels.slice());
+    const rooted = tree; // The NJ tree is represented with a root created at the final join.
+
+    const newick = toNewick(rooted, Number(decimalsEl.value));
+    newickEl.value = newick;
+
+    drawTree(rooted);
+
+    if (chkResiduals.checked){
+      const leaves = getLeaves(rooted).map(n => n.name);
+      const Dp = computePatristicMatrix(rooted, leaves);
+      const res = compareMatrices(D, Dp);
+      const quartet = quartetDiagnostics(D, leaves, Number(tolEl.value));
+      renderDiagnostics(res, quartet, leaves);
+    }
+  }
+
+  // Parse FASTA - tolerant of spaces and case
+  function parseFasta(text){
+    const lines = text.split(/\r?\n/);
+    const labels = [];
+    const seqs = [];
+    let curr = '';
+    for (let i=0;i<lines.length;i++){
+      const line = lines[i].trim();
+      if (!line) continue;
+      if (line.startsWith('>')){
+        labels.push(line.substring(1).trim() || ('taxon_' + labels.length));
+        if (curr){ seqs.push(curr); curr = ''; }
+      } else {
+        curr += line.replace(/\s+/g, '').toUpperCase();
+      }
+    }
+    if (curr) seqs.push(curr);
+    if (labels.length !== seqs.length) throw new Error('FASTA parse error. Each ">" header must be followed by a sequence.');
+    return {labels, seqs};
+  }
+
+  // Compute distance matrix using p-distance or K2P
+  function computeDistanceMatrix(labels, seqs, opts){
+    const n = labels.length;
+    const D = Array.from({length:n}, () => Array(n).fill(0));
+    const isGapN = (c) => c === '-' || c === 'N' || c === 'X' || c === '?';
+    const transitions = new Set(['AG','GA','CT','TC']);
+
+    for (let i=0;i<n;i++){
+      for (let j=i+1;j<n;j++){
+        let comp=0, mism=0, P=0, Q=0; // P transitions, Q transversions
+        const a = seqs[i], b = seqs[j];
+        for (let k=0;k<a.length;k++){
+          const ai = a[k], bj = b[k];
+          if (opts.gapMode === 'pairwise-exclude' && (isGapN(ai) || isGapN(bj))) continue;
+          comp++;
+          if (ai === bj) continue;
+          if (opts.model === 'k2p'){
+            const pair = ai + bj;
+            const valid = 'ACGT'.includes(ai) && 'ACGT'.includes(bj);
+            if (!valid){ mism++; continue; }
+            if (transitions.has(pair)) P++; else Q++;
+          } else {
+            mism++;
+          }
+        }
+        let dist = 0;
+        if (comp === 0){ dist = 0; } else if (opts.model === 'k2p'){
+          const p = P/comp, q = Q/comp;
+          const t1 = 1 - 2*p - q;
+          const t2 = 1 - 2*q;
+          if (t1 <= 0 || t2 <= 0){
+            dist = Infinity; // saturated
+          } else {
+            dist = -0.5*Math.log(t1) - 0.25*Math.log(t2);
+          }
+        } else {
+          dist = mism/comp;
+        }
+        if (opts.model === 'k2p' && !isFinite(dist)) dist = 3.0; // clamp if needed
+        D[i][j] = D[j][i] = dist;
+      }
+    }
+    return {D};
+  }
+
+  // Neighbor Joining implementation - returns a rooted binary tree object
+  function neighborJoining(Dinit, labelsInit){
+    // Work on copies
+    let D = Dinit.map(row => row.slice());
+    let labels = labelsInit.slice();
+    const nodes = new Map(); // label -> node
+    for (const name of labels){ nodes.set(name, { name, children: [] }); }
+
+    while (labels.length > 2){
+      const n = labels.length;
+      // r sums
+      const r = Object.create(null);
+      for (let i=0;i<n;i++){
+        let sum = 0; for (let j=0;j<n;j++) if (i!==j) sum += D[i][j];
+        r[i] = sum;
+      }
+      // Build Q and find min
+      let minVal = Infinity, mini = -1, minj = -1;
+      for (let i=0;i<n;i++){
+        for (let j=i+1;j<n;j++){
+          const q = (n-2)*D[i][j] - r[i] - r[j];
+          if (q < minVal){ minVal = q; mini = i; minj = j; }
+        }
+      }
+      const i = mini, j = minj;
+      const nameI = labels[i], nameJ = labels[j];
+
+      // Limb lengths
+      const Li = 0.5*D[i][j] + (r[i] - r[j])/(2*(n-2));
+      const Lj = D[i][j] - Li;
+
+      // Create new node U
+      const uName = nameI + '_' + nameJ + '#' + (Math.random().toString(36).slice(2,7));
+      const uNode = { name: uName, children: [ {node: nodes.get(nameI), length: Math.max(Li,0)}, {node: nodes.get(nameJ), length: Math.max(Lj,0)} ] };
+      nodes.set(uName, uNode);
+
+      // Build new D with u
+      const newLabels = [];
+      const mapOldToNew = new Map();
+      for (let idx=0; idx<labels.length; idx++) if (idx!==i && idx!==j){
+        newLabels.push(labels[idx]);
+        mapOldToNew.set(idx, newLabels.length-1);
+      }
+      newLabels.push(uName);
+
+      const m = newLabels.length;
+      const D2 = Array.from({length:m}, () => Array(m).fill(0));
+      // Copy old distances for survivors
+      for (let a=0;a<labels.length;a++){
+        if (a===i || a===j) continue;
+        for (let b=a+1;b<labels.length;b++){
+          if (b===i || b===j) continue;
+          const A = mapOldToNew.get(a), B = mapOldToNew.get(b);
+          D2[A][B] = D2[B][A] = D[a][b];
+        }
+      }
+      // Distances from u to others
+      for (let a=0;a<labels.length;a++){
+        if (a===i || a===j) continue;
+        const A = mapOldToNew.get(a);
+        const d = 0.5*(D[i][a] + D[j][a] - D[i][j]);
+        D2[A][m-1] = D2[m-1][A] = d;
+      }
+
+      labels = newLabels;
+      D = D2;
+    }
+
+    // Final join to root
+    const aName = labels[0], bName = labels[1];
+    const aNode = nodes.get(aName), bNode = nodes.get(bName);
+    const dist = D[0][1];
+    const root = { name: 'root', children: [ {node:aNode, length: dist/2}, {node:bNode, length: dist/2} ] };
+    return root;
+  }
+
+  // Newick export
+  function toNewick(node, decimals=5){
+    function fmt(x){ return Number(x).toFixed(decimals).replace(/0+$/,'').replace(/\.$/,''); }
+    function esc(name){ return name.replace(/[\s:,()\[\]']/g, '_'); }
+    function walk(n){
+      if (!n.children || n.children.length===0){ return esc(n.name); }
+      const parts = n.children.map(ch => {
+        const sub = walk(ch.node);
+        return sub + ':' + fmt(ch.length);
+      });
+      return '(' + parts.join(',') + ')';
+    }
+    // For the synthetic root, attach a trailing semicolon and include branch lengths
+    if (node.name === 'root'){
+      const parts = node.children.map(ch => walk(ch.node) + ':' + Number(ch.length).toFixed(decimals));
+      return '(' + parts.join(',') + ')root;';
+    }
+    return walk(node) + ';'
+  }
+
+  // Simple horizontal tree drawing - cladogram scaled by branch length
+  function drawTree(root){
+    clearSVG();
+    const margin = {top:20,right:20,bottom:20,left:120};
+    const width = svg.viewBox.baseVal.width;
+    const height = svg.viewBox.baseVal.height;
+
+    // Gather leaves in order and compute y positions
+    const leaves = getLeaves(root);
+
+    const yStep = (height - margin.top - margin.bottom) / Math.max(1, leaves.length - 1);
+    const yPos = new Map();
+    leaves.forEach((leaf, idx) => { yPos.set(leaf, margin.top + idx*yStep); });
+
+    // Compute x as cumulative branch length, then scale to width
+    function maxDepth(n, acc){
+      if (!n.children || n.children.length===0) return acc;
+      return Math.max(...n.children.map(ch => maxDepth(ch.node, acc + ch.length)));
+    }
+    const totalLen = maxDepth(root, 0) || 1;
+    const scaleX = (x) => margin.left + (x / totalLen) * (width - margin.left - margin.right);
+
+    const coords = new Map();
+    function layout(n, x){
+      if (!n.children || n.children.length===0){
+        const y = yPos.get(n);
+        const pt = {x: scaleX(x), y};
+        coords.set(n, pt);
+        return pt;
+      }
+      const childPts = n.children.map(ch => layout(ch.node, x + ch.length));
+      const y = (Math.min(...childPts.map(p=>p.y)) + Math.max(...childPts.map(p=>p.y)))/2;
+      const pt = {x: scaleX(x), y};
+      coords.set(n, pt);
+      // Draw connectors: vertical line between children and horizontal to each child
+      const y1 = Math.min(...childPts.map(p=>p.y));
+      const y2 = Math.max(...childPts.map(p=>p.y));
+      line(pt.x, y1, pt.x, y2);
+      for (let k=0;k<n.children.length;k++){
+        const ch = n.children[k];
+        const cp = childPts[k];
+        line(pt.x, cp.y, cp.x, cp.y);
+        if (chkLabels.checked){
+          const midx = (pt.x + cp.x)/2;
+          const midy = cp.y - 6; // small offset above line
+          label(Number(ch.length).toFixed(Number(decimalsEl.value)), midx, midy, 'middle');
+        }
+      }
+      return pt;
+    }
+
+    layout(root, 0);
+
+    // Leaf labels
+    for (const leaf of leaves){
+      const {x,y} = coords.get(leaf);
+      text(leaf.name, x+6, y+4, 'start');
+    }
+
+    // Scale legend
+    const legendLen = totalLen/5; // 20 percent of total
+    const x0 = margin.left, y0 = height - 10;
+    line(x0, y0, x0 + (width - margin.left - margin.right)/5, y0);
+    text((legendLen).toFixed(3), x0, y0-6, 'start');
+  }
+
+  // Utility to collect leaves
+  function getLeaves(root){
+    const leaves = [];
+    (function collect(n){
+      if (!n.children || n.children.length===0){ leaves.push(n); return; }
+      for (const ch of n.children) collect(ch.node);
+    })(root);
+    return leaves;
+  }
+
+  function clearSVG(){ while (svg.firstChild) svg.removeChild(svg.firstChild); }
+  function line(x1,y1,x2,y2){
+    const el = document.createElementNS('http://www.w3.org/2000/svg','line');
+    el.setAttribute('x1', x1); el.setAttribute('y1', y1);
+    el.setAttribute('x2', x2); el.setAttribute('y2', y2);
+    el.setAttribute('stroke', '#cfe0ff'); el.setAttribute('stroke-width', '1.5');
+    svg.appendChild(el);
+  }
+  function text(str,x,y,anchor){
+    const el = document.createElementNS('http://www.w3.org/2000/svg','text');
+    el.setAttribute('x', x); el.setAttribute('y', y);
+    el.setAttribute('dominant-baseline','middle');
+    el.setAttribute('text-anchor', anchor || 'middle');
+    el.setAttribute('font-size','12');
+    el.setAttribute('fill','#e7ecff');
+    el.textContent = str;
+    svg.appendChild(el);
+  }
+  function label(str,x,y,anchor){
+    const el = document.createElementNS('http://www.w3.org/2000/svg','text');
+    el.setAttribute('x', x); el.setAttribute('y', y);
+    el.setAttribute('text-anchor', anchor || 'middle');
+    el.setAttribute('font-size','11');
+    el.setAttribute('fill','#9fb0d0');
+    el.textContent = str;
+    svg.appendChild(el);
+  }
+
+  function renderMatrix(labels, D){
+    const tbl = document.createElement('table');
+    const thead = document.createElement('thead');
+    const hr = document.createElement('tr');
+    hr.appendChild(document.createElement('th'));
+    for (const l of labels){ const th = document.createElement('th'); th.textContent = l; hr.appendChild(th); }
+    thead.appendChild(hr);
+    tbl.appendChild(thead);
+
+    const tb = document.createElement('tbody');
+    for (let i=0;i<labels.length;i++){
+      const tr = document.createElement('tr');
+      const th = document.createElement('th'); th.textContent = labels[i]; tr.appendChild(th);
+      for (let j=0;j<labels.length;j++){
+        const td = document.createElement('td');
+        const v = D[i][j];
+        td.textContent = (i===j) ? '0' : Number.isFinite(v) ? v.toFixed(5) : 'Inf';
+        tr.appendChild(td);
+      }
+      tb.appendChild(tr);
+    }
+    tbl.appendChild(tb);
+    matrixEl.replaceChildren(tbl);
+  }
+
+  // === Additivity diagnostics ===
+  function computePatristicMatrix(root, leafNames){
+    // Build parent pointers and depths from root
+    const parents = new Map();
+    const depths = new Map(); // node -> distance from root
+    (function dfs(n, d){
+      depths.set(n, d);
+      if (!n.children || n.children.length===0) return;
+      for (const ch of n.children){
+        parents.set(ch.node, n);
+        dfs(ch.node, d + ch.length);
+      }
+    })(root, 0);
+
+    const leaves = [];
+    (function collect(n){
+      if (!n.children || n.children.length===0){ leaves.push(n); return; }
+      for (const ch of n.children) collect(ch.node);
+    })(root);
+
+    // Helper to find LCA depth given two leaves
+    function lcaDepth(a, b){
+      const seen = new Set();
+      let x = a;
+      while (x){ seen.add(x); x = parents.get(x) || null; }
+      let y = b;
+      while (y){ if (seen.has(y)) return depths.get(y); y = parents.get(y) || null; }
+      return 0;
+    }
+
+    const n = leafNames.length;
+    const Dp = Array.from({length:n},()=>Array(n).fill(0));
+    // Map name to node
+    const nameToNode = new Map(leaves.map(n=>[n.name,n]));
+
+    for (let i=0;i<n;i++){
+      for (let j=i+1;j<n;j++){
+        const a = nameToNode.get(leafNames[i]);
+        const b = nameToNode.get(leafNames[j]);
+        const dab = depths.get(a) + depths.get(b) - 2*lcaDepth(a,b);
+        Dp[i][j] = Dp[j][i] = dab;
+      }
+    }
+    return Dp;
+  }
+
+  function compareMatrices(D, Dp){
+    const n = D.length;
+    let sse=0, maxAbs=0, mae=0, count=0;
+    const residuals = Array.from({length:n},()=>Array(n).fill(0));
+    for (let i=0;i<n;i++){
+      for (let j=i+1;j<n;j++){
+        const r = D[i][j] - Dp[i][j];
+        residuals[i][j] = residuals[j][i] = r;
+        const a = Math.abs(r);
+        sse += r*r; mae += a; count++; if (a>maxAbs) maxAbs=a;
+      }
+    }
+    return {sse, mae: mae/count, maxAbs, residuals};
+  }
+
+  // Four-point condition diagnostics for all quartets
+  function quartetDiagnostics(D, labels, tol){
+    const n = labels.length;
+    let ok=0, total=0, maxDev=0;
+    function s(i,j){return D[i][j];}
+    for (let a=0;a<n;a++){
+      for (let b=a+1;b<n;b++){
+        for (let c=b+1;c<n;c++){
+          for (let d=c+1;d<n;d++){
+            total++;
+            const s1 = s(a,b)+s(c,d);
+            const s2 = s(a,c)+s(b,d);
+            const s3 = s(a,d)+s(b,c);
+            const arr = [s1,s2,s3].sort((x,y)=>x-y);
+            const dev = Math.abs(arr[0]-arr[1]);
+            if (dev <= tol) ok++;
+            if (dev>maxDev) maxDev=dev;
+          }
+        }
+      }
+    }
+    return {ok, total, passRate: total? ok/total:1, maxDeviation: maxDev};
+  }
+
+  function renderDiagnostics(res, quartet, labels){
+    const wrap = document.createElement('div');
+    wrap.className = 'mono';
+    const p1 = document.createElement('div');
+    p1.textContent = `Residuals vs. patristic distances: SSE=${res.sse.toExponential(3)} | MAE=${res.mae.toFixed(6)} | Max|res|=${res.maxAbs.toFixed(6)}`;
+    const p2 = document.createElement('div');
+    p2.textContent = `Four-point condition: ${quartet.ok}/${quartet.total} quartets within ε, pass rate ${(100*quartet.passRate).toFixed(1)}%, max deviation ${quartet.maxDeviation.toFixed(6)}`;
+    wrap.appendChild(p1); wrap.appendChild(p2);
+
+    // Small residuals table
+    const tbl = document.createElement('table');
+    const thead = document.createElement('thead');
+    const hr = document.createElement('tr');
+    hr.appendChild(document.createElement('th'));
+    for (const l of labels){ const th = document.createElement('th'); th.textContent = l; hr.appendChild(th); }
+    thead.appendChild(hr); tbl.appendChild(thead);
+    const tb = document.createElement('tbody');
+    for (let i=0;i<labels.length;i++){
+      const tr = document.createElement('tr');
+      const th = document.createElement('th'); th.textContent = labels[i]; tr.appendChild(th);
+      for (let j=0;j<labels.length;j++){
+        const td = document.createElement('td');
+        const v = res.residuals[i][j];
+        td.textContent = (i===j) ? '0' : v.toFixed(6);
+        tr.appendChild(td);
+      }
+      tb.appendChild(tr);
+    }
+    tbl.appendChild(tb);
+
+    const help = document.createElement('div');
+    help.className = 'muted';
+    help.textContent = 'Residuals are D_observed - D_patristic (tree). For a perfectly additive matrix they will all be zero within numerical tolerance. The four-point condition checks additivity on all quartets.';
+
+    diagEl.replaceChildren(wrap, document.createElement('div'), tbl, help);
+  }
+
+  // === Self tests ===
+  function runSelfTests(){
+    testsEl.replaceChildren();
+    const out = document.createElement('div');
+
+    // Test 1: NJ reconstructs a perfectly additive quartet
+    const labels = ['A','B','C','D'];
+    // Tree: ((A:1,B:1):2,(C:1,D:1):2);
+    const D = [
+      [0, 2, 4, 4],
+      [2, 0, 4, 4],
+      [4, 4, 0, 2],
+      [4, 4, 2, 0]
+    ];
+    const tree = neighborJoining(D, labels.slice());
+    const Dp = computePatristicMatrix(tree, labels);
+    const res = compareMatrices(D, Dp);
+    const pass1 = res.maxAbs < 1e-9;
+
+    // Test 2: Four-point violates after perturbation
+    const D2 = [
+      [0, 2.2, 4, 4],
+      [2.2, 0, 4, 4],
+      [4, 4, 0, 2],
+      [4, 4, 2, 0]
+    ];
+    const q = quartetDiagnostics(D2, labels, 1e-6);
+    const pass2 = q.passRate < 1.0;
+
+    // Test 3: FASTA parser basic
+    const parsed = parseFasta('>X\nACGT\n>Y\nAC-T\n');
+    const pass3 = parsed.labels.length === 2 && parsed.seqs[0] === 'ACGT' && parsed.seqs[1] === 'AC-T';
+
+    out.innerHTML = ''+
+      `<div>Test 1 (additive quartet residuals≈0): <span class="${pass1?'ok':'bad'}">${pass1?'PASS':'FAIL'}</span> (max|res|=${res.maxAbs})</div>`+
+      `<div>Test 2 (four-point detects violation): <span class="${pass2?'ok':'bad'}">${pass2?'PASS':'FAIL'}</span> (passRate=${(100*q.passRate).toFixed(1)}%)</div>`+
+      `<div>Test 3 (FASTA parser): <span class="${pass3?'ok':'bad'}">${pass3?'PASS':'FAIL'}</span></div>`;
+
+    testsEl.appendChild(out);
+  }
+})();
+</script>
+</body>
+</html>
